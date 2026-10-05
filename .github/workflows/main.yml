@@ -1,0 +1,59 @@
+name: Build 360V6 Slim Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Firmware version tag
+        required: true
+        default: slim
+
+jobs:
+  build:
+    runs-on: ubuntu‑latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: 25.12‑nss
+          fetch‑depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build‑essential ccache flex bison gawk python3 python3‑pip unzip libncurses‑dev git rsync wget curl time
+
+      - name: Setup swap memory
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1G count=8
+          sudo chmod 0600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Prepare feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply seed config
+        run: |
+          cp config/360v6.seed .config
+          make defconfig
+
+      - name: Compile host+toolchain+packages
+        id: compile
+        run: |
+          set -o pipefail
+          make -j$(nproc) 2>&1 | tee build.log
+          make image 2>&1 | tee -a build.log
+
+      - name: Upload artifacts
+        uses: actions/upload‑artifact@v4
+        with:
+          name: 360v6‑slim‑firmware
+          path: |
+            bin/targets/qualcommax/ipq60xx/*.cdt
+            bin/targets/qualcommax/ipq60xx/*.bin
+            build.log
