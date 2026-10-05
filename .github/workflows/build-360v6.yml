@@ -1,146 +1,59 @@
-# ============================================================
-# 360V6 精简固件编译 Workflow
-# 仓库: ThinkPad88/LibWrt (分支: 25.12-nss)
-# 设备: Qihoo 360V6 (Qualcomm IPQ6000 / qualcommax/ipq60xx)
-# 功能: OpenClash + Samba4/NFS U盘共享 + Transmission/Aria2 下载
-# 分区: 1G CDT 大分区
-# ============================================================
-
 name: Build 360V6 Slim Firmware
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '固件版本标识'
-        required: false
-        default: 'slim'
-  push:
-    branches:
-      - 25.12-nss
-    paths:
-      - '.github/workflows/build-360v6.yml'
-      - 'config/360v6.seed'
-
-env:
-  TARGET: qualcommax
-  SUBTARGET: ipq60xx
-  PROFILE: qihoo_360v6
-  BUILD_JOBS: 2
+        description: Firmware version tag
+        required: true
+        default: slim
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 720
-    permissions:
-      contents: write
-
+    runs-on: ubuntu‑latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
-          clean: true
+          ref: 25.12‑nss
+          fetch‑depth: 0
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential clang g++ make binutils flex bison \
-            libncurses5-dev libncursesw5-dev zlib1g-dev gawk \
-            gettext libssl-dev libsnmp-dev libxml2-dev \
-            python3 python3-distutils rsync unzip git wget curl \
-            subversion mercurial ccache file swig \
-            device-tree-compiler qemu-utils dosfstools \
-            e2fsprogs parted uuid-dev cpio
+          sudo apt update
+          sudo apt install -y build‑essential ccache flex bison gawk python3 python3‑pip unzip libncurses‑dev git rsync wget curl time
 
-      - name: Configure swap (8G)
+      - name: Setup swap memory
         run: |
-          sudo swapoff -a 2>/dev/null || true
+          sudo swapoff -a
           sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-          sudo chmod 600 /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1G count=8
+          sudo chmod 0600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-          free -h
 
-      - name: Update feeds
+      - name: Prepare feeds
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Add OpenClash package
+      - name: Apply seed config
         run: |
-          mkdir -p package/OpenClash
-          git clone --depth=1 https://github.com/vernesong/OpenClash.git /tmp/OpenClash-src
-          cp -a /tmp/OpenClash-src/luci-app-openclash package/OpenClash/
-          ls package/OpenClash/luci-app-openclash/Makefile && echo "OpenClash package added"
-
-      - name: Configure firmware (.config)
-        run: |
-          cat > .config << 'HEADER'
-          CONFIG_TARGET_qualcommax=y
-          CONFIG_TARGET_qualcommax_ipq60xx=y
-          CONFIG_TARGET_qualcommax_ipq60xx_qihoo_360v6=y
-          HEADER
-          if [ -f config/360v6.seed ]; then
-            cat config/360v6.seed >> .config
-          fi
+          cp config/360v6.seed .config
           make defconfig
-          echo "===== Key packages ====="
-          grep -E "CONFIG_PACKAGE_(luci-app-openclash|luci-app-samba4|transmission|aria2|kmod-usb-storage|block-mount)" .config
 
-      - name: Download sources
+      - name: Compile host+toolchain+packages
+        id: compile
         run: |
-          make download -j8 V=s || make download -j1 V=s
+          set -o pipefail
+          make -j$(nproc) 2>&1 | tee build.log
+          make image 2>&1 | tee -a build.log
 
-      - name: Build firmware
-        run: |
-          echo "Build started at $(date)"
-          make -j${BUILD_JOBS} V=s IGNORE_ERROR=1 2>&1 | tee build.log
-          echo "Build finished at $(date)"
-          IMG_DIR="bin/targets/${TARGET}/${SUBTARGET}"
-          ls -lh $IMG_DIR/ || echo "No image directory"
-
-      - name: Collect artifacts
-        if: always()
-        run: |
-          IMG_DIR="bin/targets/${TARGET}/${SUBTARGET}"
-          mkdir -p artifacts
-          if [ -d "$IMG_DIR" ]; then
-            cp -v $IMG_DIR/*.bin artifacts/ 2>/dev/null || true
-            cp -v $IMG_DIR/*.ubi artifacts/ 2>/dev/null || true
-            cp -v $IMG_DIR/*.img artifacts/ 2>/dev/null || true
-            cp -v $IMG_DIR/*.manifest artifacts/ 2>/dev/null || true
-            cp -v $IMG_DIR/*.sha256sums artifacts/ 2>/dev/null || true
-          fi
-          cp build.log artifacts/ 2>/dev/null || true
-          ls -lh artifacts/
-
-      - name: Upload firmware
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: actions/upload‑artifact@v4
         with:
-          name: 360v6-slim-firmware
-          path: artifacts/
-          retention-days: 30
-
-      - name: Create Release (manual trigger)
-        if: github.event_name == 'workflow_dispatch' && success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: 360v6-${{ github.event.inputs.version || 'slim' }}-$(date +%Y%m%d)
-          name: 360V6 Slim ${{ github.event.inputs.version || 'slim' }} $(date +%Y%m%d)
-          files: |
-            artifacts/*.bin
-            artifacts/*.ubi
-            artifacts/*.img
-          body: |
-            ## 360V6 精简固件
-            - 设备: Qihoo 360V6 (IPQ6000)
-            - 分区: 1G CDT 大分区
-            - 包含: OpenClash + Samba4/NFS + Transmission + Aria2 + USB存储
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: 360v6‑slim‑firmware
+          path: |
+            bin/targets/qualcommax/ipq60xx/*.cdt
+            bin/targets/qualcommax/ipq60xx/*.bin
+            build.log
